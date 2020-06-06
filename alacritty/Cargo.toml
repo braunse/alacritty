@@ -8,6 +8,13 @@ readme = "../README.md"
 homepage = "https://github.com/alacritty/alacritty"
 edition = "2018"
 
+[package.metadata.deb]
+extended-description-file = "debian/description.txt"
+assets = [
+    ["target/release/alacritty", "usr/bin/", "755"],
+    ["../README.md", "usr/share/doc/alacritty/README", "644"]
+]
+
 [dependencies]
 alacritty_terminal = { path = "../alacritty_terminal", default-features = false }
 clap = "2"
