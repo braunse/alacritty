@@ -1,16 +1,3 @@
-// Copyright 2016 Joe Wilm, The Alacritty Project Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
 use bitflags::bitflags;
 
 use serde::{Deserialize, Serialize};
@@ -25,18 +12,19 @@ pub const MAX_ZEROWIDTH_CHARS: usize = 5;
 bitflags! {
     #[derive(Serialize, Deserialize)]
     pub struct Flags: u16 {
-        const INVERSE           = 0b00_0000_0001;
-        const BOLD              = 0b00_0000_0010;
-        const ITALIC            = 0b00_0000_0100;
-        const BOLD_ITALIC       = 0b00_0000_0110;
-        const UNDERLINE         = 0b00_0000_1000;
-        const WRAPLINE          = 0b00_0001_0000;
-        const WIDE_CHAR         = 0b00_0010_0000;
-        const WIDE_CHAR_SPACER  = 0b00_0100_0000;
-        const DIM               = 0b00_1000_0000;
-        const DIM_BOLD          = 0b00_1000_0010;
-        const HIDDEN            = 0b01_0000_0000;
-        const STRIKEOUT         = 0b10_0000_0000;
+        const INVERSE                   = 0b000_0000_0001;
+        const BOLD                      = 0b000_0000_0010;
+        const ITALIC                    = 0b000_0000_0100;
+        const BOLD_ITALIC               = 0b000_0000_0110;
+        const UNDERLINE                 = 0b000_0000_1000;
+        const WRAPLINE                  = 0b000_0001_0000;
+        const WIDE_CHAR                 = 0b000_0010_0000;
+        const WIDE_CHAR_SPACER          = 0b000_0100_0000;
+        const DIM                       = 0b000_1000_0000;
+        const DIM_BOLD                  = 0b000_1000_0010;
+        const HIDDEN                    = 0b001_0000_0000;
+        const STRIKEOUT                 = 0b010_0000_0000;
+        const LEADING_WIDE_CHAR_SPACER  = 0b100_0000_0000;
     }
 }
 
@@ -72,7 +60,8 @@ impl GridCell for Cell {
                     | Flags::UNDERLINE
                     | Flags::STRIKEOUT
                     | Flags::WRAPLINE
-                    | Flags::WIDE_CHAR_SPACER,
+                    | Flags::WIDE_CHAR_SPACER
+                    | Flags::LEADING_WIDE_CHAR_SPACER,
             )
     }
 

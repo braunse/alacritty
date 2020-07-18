@@ -1,20 +1,6 @@
-// Copyright 2016 Joe Wilm, The Alacritty Project Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-//
 //! Alacritty - The GPU Enhanced Terminal.
+
 #![deny(clippy::all, clippy::if_not_else, clippy::enum_glob_use, clippy::wrong_pub_self_convention)]
-#![cfg_attr(feature = "nightly", feature(core_intrinsics))]
 #![cfg_attr(all(test, feature = "bench"), feature(test))]
 // With the default subsystem, 'console', windows creates an additional console
 // window for the program.
@@ -36,25 +22,28 @@ use log::{error, info};
 #[cfg(windows)]
 use winapi::um::wincon::{AttachConsole, FreeConsole, ATTACH_PARENT_PROCESS};
 
-use alacritty_terminal::clipboard::Clipboard;
-use alacritty_terminal::event::Event;
 use alacritty_terminal::event_loop::{self, EventLoop, Msg};
-#[cfg(target_os = "macos")]
-use alacritty_terminal::locale;
-use alacritty_terminal::message_bar::MessageBuffer;
-use alacritty_terminal::panic;
 use alacritty_terminal::sync::FairMutex;
 use alacritty_terminal::term::Term;
 use alacritty_terminal::tty;
 
 mod cli;
+mod clipboard;
 mod config;
 mod cursor;
+mod daemon;
 mod display;
 mod event;
 mod input;
+#[cfg(target_os = "macos")]
+mod locale;
 mod logging;
+mod message_bar;
+mod meter;
+#[cfg(windows)]
+mod panic;
 mod renderer;
+mod scheduler;
 mod url;
 mod window;
 
@@ -70,9 +59,11 @@ use crate::cli::Options;
 use crate::config::monitor::Monitor;
 use crate::config::Config;
 use crate::display::Display;
-use crate::event::{EventProxy, Processor};
+use crate::event::{Event, EventProxy, Processor};
+use crate::message_bar::MessageBuffer;
 
 fn main() {
+    #[cfg(windows)]
     panic::attach_handler();
 
     // When linked with the windows subsystem windows won't automatically attach
@@ -99,7 +90,7 @@ fn main() {
     let config = options.into_config(config);
 
     // Update the log level from config.
-    log::set_max_level(config.debug.log_level);
+    log::set_max_level(config.ui_config.debug.log_level);
 
     // Switch to home directory.
     #[cfg(target_os = "macos")]
@@ -109,7 +100,7 @@ fn main() {
     locale::set_locale_environment();
 
     // Store if log file should be deleted before moving config.
-    let persistent_logging = config.persistent_logging();
+    let persistent_logging = config.ui_config.debug.persistent_logging;
 
     // Run Alacritty.
     if let Err(err) = run(window_event_loop, config) {
@@ -149,18 +140,12 @@ fn run(window_event_loop: GlutinEventLoop<Event>, config: Config) -> Result<(), 
 
     info!("PTY dimensions: {:?} x {:?}", display.size_info.lines(), display.size_info.cols());
 
-    // Create new native clipboard.
-    #[cfg(not(any(target_os = "macos", windows)))]
-    let clipboard = Clipboard::new(display.window.wayland_display());
-    #[cfg(any(target_os = "macos", windows))]
-    let clipboard = Clipboard::new();
-
     // Create the terminal.
     //
     // This object contains all of the state about what's being displayed. It's
     // wrapped in a clonable mutex since both the I/O loop and display need to
     // access it.
-    let terminal = Term::new(&config, &display.size_info, clipboard, event_proxy.clone());
+    let terminal = Term::new(&config, &display.size_info, event_proxy.clone());
     let terminal = Arc::new(FairMutex::new(terminal));
 
     // Create the PTY.
@@ -179,7 +164,13 @@ fn run(window_event_loop: GlutinEventLoop<Event>, config: Config) -> Result<(), 
     // renderer and input processing. Note that access to the terminal state is
     // synchronized since the I/O loop updates the state, and the display
     // consumes it periodically.
-    let event_loop = EventLoop::new(Arc::clone(&terminal), event_proxy.clone(), pty, &config);
+    let event_loop = EventLoop::new(
+        Arc::clone(&terminal),
+        event_proxy.clone(),
+        pty,
+        config.hold,
+        config.ui_config.debug.ref_test,
+    );
 
     // The event loop channel allows write requests from the event processor
     // to be sent to the pty loop and ultimately written to the pty.
@@ -189,7 +180,7 @@ fn run(window_event_loop: GlutinEventLoop<Event>, config: Config) -> Result<(), 
     //
     // The monitor watches the config file for changes and reloads it. Pending
     // config changes are processed in the main loop.
-    if config.live_config_reload() {
+    if config.ui_config.live_config_reload() {
         config.config_path.as_ref().map(|path| Monitor::new(path, event_proxy.clone()));
     }
 

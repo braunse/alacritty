@@ -1,65 +1,44 @@
-// Copyright 2016 Joe Wilm, The Alacritty Project Contributors
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-use std::convert::From;
+#[rustfmt::skip]
 #[cfg(not(any(target_os = "macos", windows)))]
-use std::ffi::c_void;
+use {
+    std::ffi::c_void,
+    std::os::raw::c_ulong,
+    std::sync::atomic::AtomicBool,
+    std::sync::Arc,
+
+    glutin::platform::unix::{EventLoopWindowTargetExtUnix, WindowBuilderExtUnix, WindowExtUnix},
+    image::ImageFormat,
+    log::error,
+    wayland_client::protocol::wl_surface::WlSurface,
+    wayland_client::{Attached, EventQueue, Proxy},
+    x11_dl::xlib::{Display as XDisplay, PropModeReplace, XErrorEvent, Xlib},
+
+    alacritty_terminal::config::Colors,
+
+    crate::wayland_theme::AlacrittyWaylandTheme,
+};
+
 use std::fmt::{self, Display, Formatter};
-#[cfg(not(any(target_os = "macos", windows)))]
-use std::os::raw::c_ulong;
-#[cfg(not(any(target_os = "macos", windows)))]
-use std::sync::atomic::AtomicBool;
-#[cfg(not(any(target_os = "macos", windows)))]
-use std::sync::Arc;
 
 use glutin::dpi::{PhysicalPosition, PhysicalSize};
 use glutin::event_loop::EventLoop;
 #[cfg(target_os = "macos")]
 use glutin::platform::macos::{RequestUserAttentionType, WindowBuilderExtMacOS, WindowExtMacOS};
-#[cfg(not(any(target_os = "macos", windows)))]
-use glutin::platform::unix::{EventLoopWindowTargetExtUnix, WindowBuilderExtUnix, WindowExtUnix};
 #[cfg(windows)]
 use glutin::platform::windows::IconExtWindows;
 #[cfg(not(target_os = "macos"))]
 use glutin::window::Icon;
 use glutin::window::{CursorIcon, Fullscreen, Window as GlutinWindow, WindowBuilder, WindowId};
 use glutin::{self, ContextBuilder, PossiblyCurrent, WindowedContext};
-#[cfg(not(any(target_os = "macos", windows)))]
-use image::ImageFormat;
-#[cfg(not(any(target_os = "macos", windows)))]
-use log::error;
 #[cfg(windows)]
 use winapi::shared::minwindef::WORD;
-#[cfg(not(any(target_os = "macos", windows)))]
-use x11_dl::xlib::{Display as XDisplay, PropModeReplace, XErrorEvent, Xlib};
 
-#[cfg(not(any(target_os = "macos", windows)))]
-use alacritty_terminal::config::Colors;
-use alacritty_terminal::config::{Decorations, StartupMode, WindowConfig};
-use alacritty_terminal::event::Event;
-#[cfg(not(windows))]
-use alacritty_terminal::term::{SizeInfo, Term};
+use alacritty_terminal::index::Point;
+use alacritty_terminal::term::SizeInfo;
 
+use crate::config::window::{Decorations, StartupMode, WindowConfig};
 use crate::config::Config;
 use crate::gl;
-#[cfg(not(any(target_os = "macos", windows)))]
-use crate::wayland_theme::AlacrittyWaylandTheme;
-
-#[cfg(not(any(target_os = "macos", windows)))]
-use wayland_client::{Attached, EventQueue, Proxy};
-
-#[cfg(not(any(target_os = "macos", windows)))]
-use wayland_client::protocol::wl_surface::WlSurface;
 
 // It's required to be in this directory due to the `windows.rc` file.
 #[cfg(not(any(target_os = "macos", windows)))]
@@ -76,7 +55,7 @@ pub enum Error {
     ContextCreation(glutin::CreationError),
 
     /// Error dealing with fonts.
-    Font(font::Error),
+    Font(crossfont::Error),
 
     /// Error manipulating the rendering context.
     Context(glutin::ContextError),
@@ -117,15 +96,15 @@ impl From<glutin::ContextError> for Error {
     }
 }
 
-impl From<font::Error> for Error {
-    fn from(val: font::Error) -> Self {
+impl From<crossfont::Error> for Error {
+    fn from(val: crossfont::Error) -> Self {
         Error::Font(val)
     }
 }
 
-fn create_gl_window(
+fn create_gl_window<E>(
     mut window: WindowBuilder,
-    event_loop: &EventLoop<Event>,
+    event_loop: &EventLoop<E>,
     srgb: bool,
     vsync: bool,
     dimensions: Option<PhysicalSize<u32>>,
@@ -167,13 +146,14 @@ impl Window {
     /// Create a new window.
     ///
     /// This creates a window and fully initializes a window.
-    pub fn new(
-        event_loop: &EventLoop<Event>,
+    pub fn new<E>(
+        event_loop: &EventLoop<E>,
         config: &Config,
         size: Option<PhysicalSize<u32>>,
         #[cfg(not(any(target_os = "macos", windows)))] wayland_event_queue: Option<&EventQueue>,
     ) -> Result<Window> {
-        let window_builder = Window::get_platform_window(&config.window.title, &config.window);
+        let window_config = &config.ui_config.window;
+        let window_builder = Window::get_platform_window(&window_config.title, &window_config);
 
         // Disable vsync on Wayland.
         #[cfg(not(any(target_os = "macos", windows)))]
@@ -199,7 +179,7 @@ impl Window {
         {
             if event_loop.is_x11() {
                 // On X11, embed the window inside another if the parent ID has been set.
-                if let Some(parent_window_id) = config.window.embed {
+                if let Some(parent_window_id) = window_config.embed {
                     x_embed_window(windowed_context.window(), parent_window_id);
                 }
             } else {
@@ -284,7 +264,7 @@ impl Window {
             .with_visible(false)
             .with_transparent(true)
             .with_decorations(decorations)
-            .with_maximized(window_config.startup_mode() == StartupMode::Maximized)
+            .with_maximized(window_config.startup_mode == StartupMode::Maximized)
             .with_window_icon(icon.ok())
             // X11.
             .with_class(class.instance.clone(), class.general.clone())
@@ -312,7 +292,7 @@ impl Window {
             .with_visible(false)
             .with_decorations(decorations)
             .with_transparent(true)
-            .with_maximized(window_config.startup_mode() == StartupMode::Maximized)
+            .with_maximized(window_config.startup_mode == StartupMode::Maximized)
             .with_window_icon(icon.ok())
     }
 
@@ -322,7 +302,7 @@ impl Window {
             .with_title(title)
             .with_visible(false)
             .with_transparent(true)
-            .with_maximized(window_config.startup_mode() == StartupMode::Maximized);
+            .with_maximized(window_config.startup_mode == StartupMode::Maximized);
 
         match window_config.decorations {
             Decorations::Full => window,
@@ -419,8 +399,7 @@ impl Window {
 
     /// Adjust the IME editor position according to the new location of the cursor.
     #[cfg(not(windows))]
-    pub fn update_ime_position<T>(&mut self, terminal: &Term<T>, size_info: &SizeInfo) {
-        let point = terminal.grid().cursor.point;
+    pub fn update_ime_position(&mut self, point: Point, size_info: &SizeInfo) {
         let SizeInfo { cell_width, cell_height, padding_x, padding_y, .. } = size_info;
 
         let nspot_x = f64::from(padding_x + point.col.0 as f32 * cell_width);
@@ -428,6 +407,10 @@ impl Window {
 
         self.window().set_ime_position(PhysicalPosition::new(nspot_x, nspot_y));
     }
+
+    /// No-op, since Windows does not support IME positioning.
+    #[cfg(windows)]
+    pub fn update_ime_position(&mut self, _point: Point, _size_info: &SizeInfo) {}
 
     pub fn swap_buffers(&self) {
         self.windowed_context.swap_buffers().expect("swap buffers");

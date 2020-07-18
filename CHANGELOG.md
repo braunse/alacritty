@@ -10,6 +10,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Minimum Rust version has been bumped to 1.41.0
 - Prebuilt Linux binaries have been removed
+- Added manpage, terminfo, and completions to macOS application bundle
+- On Linux/BSD the build will fail without Fontconfig installed, instead of building it from source
 
 ### Removed
 
@@ -18,12 +20,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Default Command+N keybinding for SpawnNewInstance on macOS
-- Vi mode for copying text and opening links
+- Vi mode for regex search, copying text, and opening links
 - `CopySelection` action which copies into selection buffer on Linux/BSD
 - Option `cursor.thickness` to set terminal cursor thickness
 - Font fallback on Windows
 - Support for Fontconfig embolden and matrix options
 - Opt-out compilation flag `winpty` to disable WinPTY support
+- Scrolling during selection when mouse is at top/bottom of window
+- Expanding existing selections using the right mouse button
+- Support for `gopher` and `gemini` URLs
+- Unicode 13 support
+- Option to run command on bell which can be set in `bell.command`
+- Fallback to program specified in `$SHELL` variable on Linux/BSD if it is present
 
 ### Changed
 
@@ -37,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Default color scheme is now `Tomorrow Night` with the bright colors of `Tomorrow Night Bright`
 - Set IUTF8 termios flag for improved UTF8 input support
 - Dragging files into terminal now adds a space after each path
+- Default binding replacement conditions
+- Adjusted selection clearing granularity to more accurately match content
+- To use the cell's text color for selection with a modified background, the `color.selection.text`
+    variable must now be set to `CellForeground` instead of omitting it
+- URLs are no longer highlighted without a clearly delimited scheme
+- Renamed config option `visual_bell` to `bell`
+- Moved config option `dynamic_title` to `window.dynamic_title`
 
 ### Fixed
 
@@ -46,6 +61,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Slow startup with Nvidia binary drivers on some X11 systems
 - Display not scrolling when printing new lines while scrolled in history
 - Regression in font rendering on macOS
+- Scroll down escape (`CSI Ps T`) incorrectly pulling lines from history
+- Dim escape (`CSI 2 m`) support for truecolor text
+- Incorrectly deleted lines when increasing width with a prompt wrapped using spaces
+- Documentation for class in `--help` missing information on setting general class
+- Linewrap tracking when switching between primary and alternate screen buffer
+- Preservation of the alternate screen's saved cursor when swapping to primary screen and back
+- Reflow of cursor during resize
+- Cursor color escape ignored when its color is set to inverted in the config
+- Fontconfig's `autohint` and `hinting` options being ignored
+- Ingoring of default FreeType properties
+- Alacritty crashing at startup when the configured font does not exist
+- Font size rounding error
+
+### Removed
+
+- Deprecated `window.start_maximized` config field
+- Deprecated `render_timer` config field
+- Deprecated `persistent_logging` config field
 
 ## 0.4.3
 

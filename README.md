@@ -95,13 +95,7 @@ nix-env -iA nixos.alacritty
 zypper in alacritty
 ```
 
-### Pop!\_OS / Ubuntu
-
-> If you're not running Pop!_OS, you'll have to add a third party repository first:
->
-> ```sh
-> add-apt-repository ppa:mmstick76/alacritty
-> ```
+### Pop!\_OS
 
 ```sh
 apt install alacritty
@@ -131,8 +125,9 @@ pkg install alacritty
 brew cask install alacritty
 ```
 
-Once the cask is installed, it is recommended to setup the [manual page](INSTALL.md#manual-page),
-[shell completions](INSTALL.md#shell-completions), and [terminfo definitions](INSTALL.md#terminfo).
+Once the cask is installed, it is recommended to setup the manual page, shell
+completions, and terminfo definitions. These are located inside the installed
+application's Resources directory: `Alacritty.app/Contents/Resources`.
 
 ### Windows
 

@@ -1,13 +1,15 @@
 use std::fmt;
 
-use font::Size;
+use crossfont::Size;
 use log::error;
 use serde::de::Visitor;
 use serde::{Deserialize, Deserializer};
 
+use alacritty_terminal::config::{failure_default, LOG_TARGET_CONFIG};
+
 #[cfg(target_os = "macos")]
-use crate::config::DefaultTrueBool;
-use crate::config::{failure_default, Delta, LOG_TARGET_CONFIG};
+use crate::config::ui_config::DefaultTrueBool;
+use crate::config::ui_config::Delta;
 
 /// Font config.
 ///
