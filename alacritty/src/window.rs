@@ -36,13 +36,13 @@ use winapi::shared::minwindef::WORD;
 use alacritty_terminal::index::Point;
 use alacritty_terminal::term::SizeInfo;
 
-use crate::config::window::{Decorations, StartupMode, WindowConfig};
+use crate::config::window::{Decorations, WindowConfig};
 use crate::config::Config;
 use crate::gl;
 
 // It's required to be in this directory due to the `windows.rc` file.
 #[cfg(not(any(target_os = "macos", windows)))]
-static WINDOW_ICON: &[u8] = include_bytes!("../../extra/windows/alacritty.ico");
+static WINDOW_ICON: &[u8] = include_bytes!("../alacritty.ico");
 
 // This should match the definition of IDI_ICON from `windows.rc`.
 #[cfg(windows)]
@@ -137,6 +137,9 @@ pub struct Window {
     #[cfg(not(any(target_os = "macos", windows)))]
     pub wayland_surface: Option<Attached<WlSurface>>,
 
+    /// Cached DPR for quickly scaling pixel sizes.
+    pub dpr: f64,
+
     windowed_context: WindowedContext<PossiblyCurrent>,
     current_mouse_cursor: CursorIcon,
     mouse_visible: bool,
@@ -176,23 +179,23 @@ impl Window {
         let mut wayland_surface = None;
 
         #[cfg(not(any(target_os = "macos", windows)))]
-        {
-            if event_loop.is_x11() {
-                // On X11, embed the window inside another if the parent ID has been set.
-                if let Some(parent_window_id) = window_config.embed {
-                    x_embed_window(windowed_context.window(), parent_window_id);
-                }
-            } else {
-                // Apply client side decorations theme.
-                let theme = AlacrittyWaylandTheme::new(&config.colors);
-                windowed_context.window().set_wayland_theme(theme);
-
-                // Attach surface to Alacritty's internal wayland queue to handle frame callbacks.
-                let surface = windowed_context.window().wayland_surface().unwrap();
-                let proxy: Proxy<WlSurface> = unsafe { Proxy::from_c_ptr(surface as _) };
-                wayland_surface = Some(proxy.attach(wayland_event_queue.as_ref().unwrap().token()));
+        if event_loop.is_x11() {
+            // On X11, embed the window inside another if the parent ID has been set.
+            if let Some(parent_window_id) = window_config.embed {
+                x_embed_window(windowed_context.window(), parent_window_id);
             }
+        } else {
+            // Apply client side decorations theme.
+            let theme = AlacrittyWaylandTheme::new(&config.colors);
+            windowed_context.window().set_wayland_theme(theme);
+
+            // Attach surface to Alacritty's internal wayland queue to handle frame callbacks.
+            let surface = windowed_context.window().wayland_surface().unwrap();
+            let proxy: Proxy<WlSurface> = unsafe { Proxy::from_c_ptr(surface as _) };
+            wayland_surface = Some(proxy.attach(wayland_event_queue.as_ref().unwrap().token()));
         }
+
+        let dpr = windowed_context.window().scale_factor();
 
         Ok(Self {
             current_mouse_cursor,
@@ -202,6 +205,7 @@ impl Window {
             should_draw: Arc::new(AtomicBool::new(true)),
             #[cfg(not(any(target_os = "macos", windows)))]
             wayland_surface,
+            dpr,
         })
     }
 
@@ -211,10 +215,6 @@ impl Window {
 
     pub fn inner_size(&self) -> PhysicalSize<u32> {
         self.window().inner_size()
-    }
-
-    pub fn scale_factor(&self) -> f64 {
-        self.window().scale_factor()
     }
 
     #[inline]
@@ -246,11 +246,6 @@ impl Window {
 
     #[cfg(not(any(target_os = "macos", windows)))]
     pub fn get_platform_window(title: &str, window_config: &WindowConfig) -> WindowBuilder {
-        let decorations = match window_config.decorations {
-            Decorations::None => false,
-            _ => true,
-        };
-
         let image = image::load_from_memory_with_format(WINDOW_ICON, ImageFormat::Ico)
             .expect("loading icon")
             .to_rgba();
@@ -263,8 +258,9 @@ impl Window {
             .with_title(title)
             .with_visible(false)
             .with_transparent(true)
-            .with_decorations(decorations)
-            .with_maximized(window_config.startup_mode == StartupMode::Maximized)
+            .with_decorations(window_config.decorations != Decorations::None)
+            .with_maximized(window_config.maximized())
+            .with_fullscreen(window_config.fullscreen())
             .with_window_icon(icon.ok())
             // X11.
             .with_class(class.instance.clone(), class.general.clone())
@@ -280,19 +276,15 @@ impl Window {
 
     #[cfg(windows)]
     pub fn get_platform_window(title: &str, window_config: &WindowConfig) -> WindowBuilder {
-        let decorations = match window_config.decorations {
-            Decorations::None => false,
-            _ => true,
-        };
-
         let icon = Icon::from_resource(IDI_ICON, None);
 
         WindowBuilder::new()
             .with_title(title)
             .with_visible(false)
-            .with_decorations(decorations)
+            .with_decorations(window_config.decorations != Decorations::None)
             .with_transparent(true)
-            .with_maximized(window_config.startup_mode == StartupMode::Maximized)
+            .with_maximized(window_config.maximized())
+            .with_fullscreen(window_config.fullscreen())
             .with_window_icon(icon.ok())
     }
 
@@ -302,7 +294,8 @@ impl Window {
             .with_title(title)
             .with_visible(false)
             .with_transparent(true)
-            .with_maximized(window_config.startup_mode == StartupMode::Maximized);
+            .with_maximized(window_config.maximized())
+            .with_fullscreen(window_config.fullscreen());
 
         match window_config.decorations {
             Decorations::Full => window,
@@ -336,7 +329,7 @@ impl Window {
     #[cfg(windows)]
     pub fn set_urgent(&self, _is_urgent: bool) {}
 
-    pub fn set_outer_position(&self, pos: PhysicalPosition<u32>) {
+    pub fn set_outer_position(&self, pos: PhysicalPosition<i32>) {
         self.window().set_outer_position(pos);
     }
 
@@ -370,8 +363,7 @@ impl Window {
 
     pub fn set_fullscreen(&mut self, fullscreen: bool) {
         if fullscreen {
-            let current_monitor = self.window().current_monitor();
-            self.window().set_fullscreen(Some(Fullscreen::Borderless(current_monitor)));
+            self.window().set_fullscreen(Some(Fullscreen::Borderless(None)));
         } else {
             self.window().set_fullscreen(None);
         }
@@ -399,11 +391,9 @@ impl Window {
 
     /// Adjust the IME editor position according to the new location of the cursor.
     #[cfg(not(windows))]
-    pub fn update_ime_position(&mut self, point: Point, size_info: &SizeInfo) {
-        let SizeInfo { cell_width, cell_height, padding_x, padding_y, .. } = size_info;
-
-        let nspot_x = f64::from(padding_x + point.col.0 as f32 * cell_width);
-        let nspot_y = f64::from(padding_y + (point.line.0 + 1) as f32 * cell_height);
+    pub fn update_ime_position(&mut self, point: Point, size: &SizeInfo) {
+        let nspot_x = f64::from(size.padding_x() + point.col.0 as f32 * size.cell_width());
+        let nspot_y = f64::from(size.padding_y() + (point.line.0 + 1) as f32 * size.cell_height());
 
         self.window().set_ime_position(PhysicalPosition::new(nspot_x, nspot_y));
     }

@@ -43,7 +43,7 @@ brevity.
 | `CSI B`    | IMPLEMENTED |                                                   |
 | `CSI b`    | IMPLEMENTED |                                                   |
 | `CSI C`    | IMPLEMENTED |                                                   |
-| `CSI c`    | PARTIAL     | No parameter support                              |
+| `CSI c`    | IMPLEMENTED |                                                   |
 | `CSI D`    | IMPLEMENTED |                                                   |
 | `CSI d`    | IMPLEMENTED |                                                   |
 | `CSI E`    | IMPLEMENTED |                                                   |
@@ -64,7 +64,7 @@ brevity.
 | `CSI l`    | PARTIAL     | See `CSI h` for supported modes                   |
 | `CSI ? l`  | PARTIAL     | See `CSI ? h` for supported modes                 |
 | `CSI M`    | IMPLEMENTED |                                                   |
-| `CSI m`    | PARTIAL     | Colon separators are not supported                |
+| `CSI m`    | PARTIAL     | Only singular straight underlines are supported   |
 | `CSI n`    | IMPLEMENTED |                                                   |
 | `CSI P`    | IMPLEMENTED |                                                   |
 | `CSI SP q` | PARTIAL     | No blinking support                               |
@@ -73,6 +73,7 @@ brevity.
 | `CSI s`    | IMPLEMENTED |                                                   |
 | `CSI T`    | IMPLEMENTED |                                                   |
 | `CSI t`    | PARTIAL     | Only parameters `22` and `23` are supported       |
+|            | REJECTED    | `1`-`13`, `15`, `19`-`21`, `24`                   |
 | `CSI u`    | IMPLEMENTED |                                                   |
 | `CSI X`    | IMPLEMENTED |                                                   |
 | `CSI Z`    | IMPLEMENTED |                                                   |

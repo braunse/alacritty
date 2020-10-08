@@ -31,14 +31,22 @@ mod search;
 /// Max size of the window title stack.
 const TITLE_STACK_MAX_DEPTH: usize = 4096;
 
+/// Minimum contrast between a fixed cursor color and the cell's background.
+const MIN_CURSOR_CONTRAST: f64 = 1.5;
+
 /// Maximum number of linewraps followed outside of the viewport during search highlighting.
 const MAX_SEARCH_LINES: usize = 100;
 
 /// Default tab interval, corresponding to terminfo `it` value.
 const INITIAL_TABSTOPS: usize = 8;
 
-/// Minimum number of columns and lines.
-const MIN_SIZE: usize = 2;
+/// Minimum number of columns.
+///
+/// A minimum of 2 is necessary to hold fullwidth unicode characters.
+pub const MIN_COLS: usize = 2;
+
+/// Minimum number of visible lines.
+pub const MIN_SCREEN_LINES: usize = 1;
 
 /// Cursor storing all information relevant for rendering.
 #[derive(Debug, Eq, PartialEq, Copy, Clone, Deserialize)]
@@ -68,12 +76,12 @@ impl<'a> RenderableSearch<'a> {
     /// Create a new renderable search iterator.
     fn new<T>(term: &'a Term<T>) -> Self {
         let viewport_end = term.grid().display_offset();
-        let viewport_start = viewport_end + term.grid().screen_lines().0 - 1;
+        let viewport_start = viewport_end + term.screen_lines().0 - 1;
 
         // Compute start of the first and end of the last line.
         let start_point = Point::new(viewport_start, Column(0));
         let mut start = term.line_search_left(start_point);
-        let end_point = Point::new(viewport_end, term.grid().cols() - 1);
+        let end_point = Point::new(viewport_end, term.cols() - 1);
         let mut end = term.line_search_right(end_point);
 
         // Set upper bound on search before/after the viewport to prevent excessive blocking.
@@ -207,23 +215,28 @@ impl<'a, C> RenderableCellsIter<'a, C> {
         }
 
         let num_cols = self.grid.cols();
-        let cell = self.grid[&point];
+
+        // Convert to absolute coordinates to adjust for the display offset.
+        let buffer_point = self.grid.visible_to_buffer(point);
+        let cell = self.grid[buffer_point];
 
         // Check if wide char's spacers are selected.
         if cell.flags.contains(Flags::WIDE_CHAR) {
             let prev = point.sub(num_cols, 1);
+            let buffer_prev = self.grid.visible_to_buffer(prev);
             let next = point.add(num_cols, 1);
 
             // Check trailing spacer.
             selection.contains(next.col, next.line)
                 // Check line-wrapping, leading spacer.
-                || (self.grid[&prev].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
+                || (self.grid[buffer_prev].flags.contains(Flags::LEADING_WIDE_CHAR_SPACER)
                     && selection.contains(prev.col, prev.line))
         } else if cell.flags.contains(Flags::WIDE_CHAR_SPACER) {
             // Check if spacer's wide char is selected.
             let prev = point.sub(num_cols, 1);
+            let buffer_prev = self.grid.visible_to_buffer(prev);
 
-            if self.grid[&prev].flags.contains(Flags::WIDE_CHAR) {
+            if self.grid[buffer_prev].flags.contains(Flags::WIDE_CHAR) {
                 // Check previous cell for trailing spacer.
                 self.is_selected(prev)
             } else {
@@ -308,7 +321,7 @@ impl RenderableCell {
 
     fn is_empty(&self) -> bool {
         self.bg_alpha == 0.
-            && !self.flags.intersects(Flags::UNDERLINE | Flags::STRIKEOUT)
+            && !self.flags.intersects(Flags::UNDERLINE | Flags::STRIKEOUT | Flags::DOUBLE_UNDERLINE)
             && self.inner == RenderableCellContent::Chars([' '; cell::MAX_ZEROWIDTH_CHARS + 1])
     }
 
@@ -389,13 +402,20 @@ impl<'a, C> Iterator for RenderableCellsIter<'a, C> {
             if self.cursor.point.line == self.inner.line()
                 && self.cursor.point.col == self.inner.column()
             {
-                // Handle cell below cursor.
                 if self.cursor.rendered {
+                    // Handle cell below cursor.
                     let cell = self.inner.next()?;
                     let mut cell = RenderableCell::new(self, cell);
 
                     if self.cursor.key.style == CursorStyle::Block {
-                        cell.fg = self.cursor.text_color.color(cell.fg, cell.bg);
+                        cell.fg = match self.cursor.cursor_color {
+                            // Apply cursor color, or invert the cursor if it has a fixed background
+                            // close to the cell's background.
+                            CellRgb::Rgb(col) if col.contrast(cell.bg) < MIN_CURSOR_CONTRAST => {
+                                cell.bg
+                            },
+                            _ => self.cursor.text_color.color(cell.fg, cell.bg),
+                        };
                     }
 
                     return Some(cell);
@@ -412,7 +432,15 @@ impl<'a, C> Iterator for RenderableCellsIter<'a, C> {
 
                     let mut cell = RenderableCell::new(self, cell);
                     cell.inner = RenderableCellContent::Cursor(self.cursor.key);
-                    cell.fg = self.cursor.cursor_color.color(cell.fg, cell.bg);
+
+                    // Apply cursor color, or invert the cursor if it has a fixed background close
+                    // to the cell's background.
+                    if !matches!(
+                        self.cursor.cursor_color,
+                        CellRgb::Rgb(color) if color.contrast(cell.bg) < MIN_CURSOR_CONTRAST
+                    ) {
+                        cell.fg = self.cursor.cursor_color.color(cell.fg, cell.bg);
+                    }
 
                     return Some(cell);
                 }
@@ -589,68 +617,138 @@ impl From<&BellConfig> for VisualBell {
 #[derive(Serialize, Deserialize, Debug, Copy, Clone, PartialEq)]
 pub struct SizeInfo {
     /// Terminal window width.
-    pub width: f32,
+    width: f32,
 
     /// Terminal window height.
-    pub height: f32,
+    height: f32,
 
     /// Width of individual cell.
-    pub cell_width: f32,
+    cell_width: f32,
 
     /// Height of individual cell.
-    pub cell_height: f32,
+    cell_height: f32,
 
     /// Horizontal window padding.
-    pub padding_x: f32,
+    padding_x: f32,
 
     /// Horizontal window padding.
-    pub padding_y: f32,
+    padding_y: f32,
 
-    /// DPR of the current window.
-    #[serde(default)]
-    pub dpr: f64,
+    /// Number of lines in the viewport.
+    screen_lines: Line,
+
+    /// Number of columns in the viewport.
+    cols: Column,
 }
 
 impl SizeInfo {
-    #[inline]
-    pub fn lines(&self) -> Line {
-        Line(((self.height - 2. * self.padding_y) / self.cell_height) as usize)
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        width: f32,
+        height: f32,
+        cell_width: f32,
+        cell_height: f32,
+        mut padding_x: f32,
+        mut padding_y: f32,
+        dynamic_padding: bool,
+    ) -> SizeInfo {
+        if dynamic_padding {
+            padding_x = Self::dynamic_padding(padding_x.floor(), width, cell_width);
+            padding_y = Self::dynamic_padding(padding_y.floor(), height, cell_height);
+        }
+
+        let lines = (height - 2. * padding_y) / cell_height;
+        let screen_lines = Line(max(lines as usize, MIN_SCREEN_LINES));
+
+        let cols = (width - 2. * padding_x) / cell_width;
+        let cols = Column(max(cols as usize, MIN_COLS));
+
+        SizeInfo {
+            width,
+            height,
+            cell_width,
+            cell_height,
+            padding_x: padding_x.floor(),
+            padding_y: padding_y.floor(),
+            screen_lines,
+            cols,
+        }
     }
 
     #[inline]
-    pub fn cols(&self) -> Column {
-        Column(((self.width - 2. * self.padding_x) / self.cell_width) as usize)
-    }
-
-    #[inline]
-    pub fn padding_right(&self) -> usize {
-        (self.padding_x + (self.width - 2. * self.padding_x) % self.cell_width) as usize
-    }
-
-    #[inline]
-    pub fn padding_bottom(&self) -> usize {
-        (self.padding_y + (self.height - 2. * self.padding_y) % self.cell_height) as usize
+    pub fn reserve_lines(&mut self, count: usize) {
+        self.screen_lines = Line(max(self.screen_lines.saturating_sub(count), MIN_SCREEN_LINES));
     }
 
     /// Check if coordinates are inside the terminal grid.
     ///
-    /// The padding is not counted as part of the grid.
+    /// The padding, message bar or search are not counted as part of the grid.
     #[inline]
     pub fn contains_point(&self, x: usize, y: usize) -> bool {
-        x < (self.width as usize - self.padding_right())
-            && x >= self.padding_x as usize
-            && y < (self.height as usize - self.padding_bottom())
-            && y >= self.padding_y as usize
+        x <= (self.padding_x + self.cols.0 as f32 * self.cell_width) as usize
+            && x > self.padding_x as usize
+            && y <= (self.padding_y + self.screen_lines.0 as f32 * self.cell_height) as usize
+            && y > self.padding_y as usize
     }
 
+    /// Convert window space pixels to terminal grid coordinates.
+    ///
+    /// If the coordinates are outside of the terminal grid, like positions inside the padding, the
+    /// coordinates will be clamped to the closest grid coordinates.
     pub fn pixels_to_coords(&self, x: usize, y: usize) -> Point {
         let col = Column(x.saturating_sub(self.padding_x as usize) / (self.cell_width as usize));
         let line = Line(y.saturating_sub(self.padding_y as usize) / (self.cell_height as usize));
 
         Point {
-            line: min(line, Line(self.lines().saturating_sub(1))),
-            col: min(col, Column(self.cols().saturating_sub(1))),
+            line: min(line, Line(self.screen_lines.saturating_sub(1))),
+            col: min(col, Column(self.cols.saturating_sub(1))),
         }
+    }
+
+    #[inline]
+    pub fn width(&self) -> f32 {
+        self.width
+    }
+
+    #[inline]
+    pub fn height(&self) -> f32 {
+        self.height
+    }
+
+    #[inline]
+    pub fn cell_width(&self) -> f32 {
+        self.cell_width
+    }
+
+    #[inline]
+    pub fn cell_height(&self) -> f32 {
+        self.cell_height
+    }
+
+    #[inline]
+    pub fn padding_x(&self) -> f32 {
+        self.padding_x
+    }
+
+    #[inline]
+    pub fn padding_y(&self) -> f32 {
+        self.padding_y
+    }
+
+    #[inline]
+    pub fn screen_lines(&self) -> Line {
+        self.screen_lines
+    }
+
+    #[inline]
+    pub fn cols(&self) -> Column {
+        self.cols
+    }
+
+    /// Calculate padding to spread it evenly around the terminal content.
+    #[inline]
+    fn dynamic_padding(padding: f32, dimension: f32, cell_dimension: f32) -> f32 {
+        padding + ((dimension - 2. * padding) % cell_dimension) / 2.
     }
 }
 
@@ -727,6 +825,10 @@ pub struct Term<T> {
 
     /// Current forward and backward buffer search regexes.
     regex_search: Option<RegexSearch>,
+
+    /// Information about cell dimensions.
+    cell_width: usize,
+    cell_height: usize,
 }
 
 impl<T> Term<T> {
@@ -740,9 +842,9 @@ impl<T> Term<T> {
         self.dirty = true;
     }
 
-    pub fn new<C>(config: &Config<C>, size: &SizeInfo, event_proxy: T) -> Term<T> {
-        let num_cols = size.cols();
-        let num_lines = size.lines();
+    pub fn new<C>(config: &Config<C>, size: SizeInfo, event_proxy: T) -> Term<T> {
+        let num_cols = size.cols;
+        let num_lines = size.screen_lines;
 
         let history_size = config.scrolling.history() as usize;
         let grid = Grid::new(num_lines, num_cols, history_size, Cell::default());
@@ -777,6 +879,8 @@ impl<T> Term<T> {
             title_stack: Vec::new(),
             selection: None,
             regex_search: None,
+            cell_width: size.cell_width as usize,
+            cell_height: size.cell_height as usize,
         }
     }
 
@@ -946,11 +1050,15 @@ impl<T> Term<T> {
     }
 
     /// Resize terminal to new dimensions.
-    pub fn resize(&mut self, size: &SizeInfo) {
+    pub fn resize(&mut self, size: SizeInfo) {
+        self.cell_width = size.cell_width as usize;
+        self.cell_height = size.cell_height as usize;
+
         let old_cols = self.cols();
         let old_lines = self.screen_lines();
-        let num_cols = max(size.cols(), Column(MIN_SIZE));
-        let num_lines = max(size.lines(), Line(MIN_SIZE));
+
+        let num_cols = size.cols;
+        let num_lines = size.screen_lines;
 
         if old_cols == num_cols && old_lines == num_lines {
             debug!("Term::resize dimensions unchanged");
@@ -968,7 +1076,7 @@ impl<T> Term<T> {
         } else if let Some(selection) = self.selection.take() {
             // Move the selection if only number of lines changed.
             let delta = if num_lines > old_lines {
-                (num_lines - old_lines.0).saturating_sub(self.grid.history_size()) as isize
+                (num_lines - old_lines.0).saturating_sub(self.history_size()) as isize
             } else {
                 let cursor_line = self.grid.cursor.point.line;
                 -(min(old_lines - cursor_line - 1, old_lines - num_lines).0 as isize)
@@ -1496,9 +1604,19 @@ impl<T: EventListener> Handler for Term<T> {
     }
 
     #[inline]
-    fn identify_terminal<W: io::Write>(&mut self, writer: &mut W) {
-        trace!("Reporting terminal identity");
-        let _ = writer.write_all(b"\x1b[?6c");
+    fn identify_terminal<W: io::Write>(&mut self, writer: &mut W, intermediate: Option<char>) {
+        match intermediate {
+            None => {
+                trace!("Reporting primary device attributes");
+                let _ = writer.write_all(b"\x1b[?6c");
+            },
+            Some('>') => {
+                trace!("Reporting secondary device attributes");
+                let version = version_number(env!("CARGO_PKG_VERSION"));
+                let _ = writer.write_all(format!("\x1b[>0;{};1c", version).as_bytes());
+            },
+            _ => debug!("Unsupported device attributes intermediate"),
+        }
     }
 
     #[inline]
@@ -1784,7 +1902,7 @@ impl<T: EventListener> Handler for Term<T> {
             },
         }
 
-        let cursor_buffer_line = (self.grid.screen_lines() - self.grid.cursor.point.line - 1).0;
+        let cursor_buffer_line = (self.screen_lines() - self.grid.cursor.point.line - 1).0;
         self.selection = self
             .selection
             .take()
@@ -1913,7 +2031,7 @@ impl<T: EventListener> Handler for Term<T> {
 
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(..num_lines));
             },
-            ansi::ClearMode::Saved if self.grid.history_size() > 0 => {
+            ansi::ClearMode::Saved if self.history_size() > 0 => {
                 self.grid.clear_history();
 
                 self.selection = self.selection.take().filter(|s| !s.intersects_range(num_lines..));
@@ -1989,8 +2107,17 @@ impl<T: EventListener> Handler for Term<T> {
             Attr::CancelBoldDim => cursor.template.flags.remove(Flags::BOLD | Flags::DIM),
             Attr::Italic => cursor.template.flags.insert(Flags::ITALIC),
             Attr::CancelItalic => cursor.template.flags.remove(Flags::ITALIC),
-            Attr::Underline => cursor.template.flags.insert(Flags::UNDERLINE),
-            Attr::CancelUnderline => cursor.template.flags.remove(Flags::UNDERLINE),
+            Attr::Underline => {
+                cursor.template.flags.remove(Flags::DOUBLE_UNDERLINE);
+                cursor.template.flags.insert(Flags::UNDERLINE);
+            },
+            Attr::DoubleUnderline => {
+                cursor.template.flags.remove(Flags::UNDERLINE);
+                cursor.template.flags.insert(Flags::DOUBLE_UNDERLINE);
+            },
+            Attr::CancelUnderline => {
+                cursor.template.flags.remove(Flags::UNDERLINE | Flags::DOUBLE_UNDERLINE);
+            },
             Attr::Hidden => cursor.template.flags.insert(Flags::HIDDEN),
             Attr::CancelHidden => cursor.template.flags.remove(Flags::HIDDEN),
             Attr::Strike => cursor.template.flags.insert(Flags::STRIKEOUT),
@@ -2182,6 +2309,39 @@ impl<T: EventListener> Handler for Term<T> {
             self.set_title(popped);
         }
     }
+
+    #[inline]
+    fn text_area_size_pixels<W: io::Write>(&mut self, writer: &mut W) {
+        let width = self.cell_width * self.cols().0;
+        let height = self.cell_height * self.screen_lines().0;
+        let _ = write!(writer, "\x1b[4;{};{}t", height, width);
+    }
+
+    #[inline]
+    fn text_area_size_chars<W: io::Write>(&mut self, writer: &mut W) {
+        let _ = write!(writer, "\x1b[8;{};{}t", self.screen_lines(), self.cols());
+    }
+}
+
+/// Terminal version for escape sequence reports.
+///
+/// This returns the current terminal version as a unique number based on alacritty_terminal's
+/// semver version. The different versions are padded to ensure that a higher semver version will
+/// always report a higher version number.
+fn version_number(mut version: &str) -> usize {
+    if let Some(separator) = version.rfind('-') {
+        version = &version[..separator];
+    }
+
+    let mut version_number = 0;
+
+    let semver_versions = version.split('.');
+    for (i, semver_version) in semver_versions.rev().enumerate() {
+        let semver_number = semver_version.parse::<usize>().unwrap_or(0);
+        version_number += usize::pow(100, i as u32) * semver_number;
+    }
+
+    version_number
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2275,16 +2435,8 @@ pub mod test {
             .unwrap_or(0);
 
         // Create terminal with the appropriate dimensions.
-        let size = SizeInfo {
-            width: num_cols as f32,
-            height: lines.len() as f32,
-            cell_width: 1.,
-            cell_height: 1.,
-            padding_x: 0.,
-            padding_y: 0.,
-            dpr: 1.,
-        };
-        let mut term = Term::new(&Config::<()>::default(), &size, ());
+        let size = SizeInfo::new(num_cols as f32, lines.len() as f32, 1., 1., 0., 0., false);
+        let mut term = Term::new(&Config::<()>::default(), size, ());
 
         // Fill terminal with content.
         for (line, text) in lines.iter().rev().enumerate() {
@@ -2332,16 +2484,8 @@ mod tests {
 
     #[test]
     fn semantic_selection_works() {
-        let size = SizeInfo {
-            width: 21.0,
-            height: 51.0,
-            cell_width: 3.0,
-            cell_height: 3.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
         let mut grid: Grid<Cell> = Grid::new(Line(3), Column(5), 0, Cell::default());
         for i in 0..5 {
             for j in 0..2 {
@@ -2388,16 +2532,8 @@ mod tests {
 
     #[test]
     fn line_selection_works() {
-        let size = SizeInfo {
-            width: 21.0,
-            height: 51.0,
-            cell_width: 3.0,
-            cell_height: 3.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
         let mut grid: Grid<Cell> = Grid::new(Line(1), Column(5), 0, Cell::default());
         for i in 0..5 {
             grid[Line(0)][Column(i)].c = 'a';
@@ -2417,16 +2553,8 @@ mod tests {
 
     #[test]
     fn selecting_empty_line() {
-        let size = SizeInfo {
-            width: 21.0,
-            height: 51.0,
-            cell_width: 3.0,
-            cell_height: 3.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
         let mut grid: Grid<Cell> = Grid::new(Line(3), Column(3), 0, Cell::default());
         for l in 0..3 {
             if l != 1 {
@@ -2462,16 +2590,8 @@ mod tests {
 
     #[test]
     fn input_line_drawing_character() {
-        let size = SizeInfo {
-            width: 21.0,
-            height: 51.0,
-            cell_width: 3.0,
-            cell_height: 3.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
         let cursor = Point::new(Line(0), Column(0));
         term.configure_charset(CharsetIndex::G0, StandardCharset::SpecialCharacterAndLineDrawing);
         term.input('a');
@@ -2481,16 +2601,8 @@ mod tests {
 
     #[test]
     fn clear_saved_lines() {
-        let size = SizeInfo {
-            width: 21.0,
-            height: 51.0,
-            cell_width: 3.0,
-            cell_height: 3.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
 
         // Add one line of scrollback.
         term.grid.scroll_up(&(Line(0)..Line(1)), Line(1), Cell::default());
@@ -2511,140 +2623,100 @@ mod tests {
 
     #[test]
     fn grow_lines_updates_active_cursor_pos() {
-        let mut size = SizeInfo {
-            width: 100.0,
-            height: 10.0,
-            cell_width: 1.0,
-            cell_height: 1.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let mut size = SizeInfo::new(100.0, 10.0, 1.0, 1.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
 
         // Create 10 lines of scrollback.
         for _ in 0..19 {
             term.newline();
         }
-        assert_eq!(term.grid.history_size(), 10);
+        assert_eq!(term.history_size(), 10);
         assert_eq!(term.grid.cursor.point, Point::new(Line(9), Column(0)));
 
         // Increase visible lines.
-        size.height = 30.;
-        term.resize(&size);
+        size.screen_lines.0 = 30;
+        term.resize(size);
 
-        assert_eq!(term.grid.history_size(), 0);
+        assert_eq!(term.history_size(), 0);
         assert_eq!(term.grid.cursor.point, Point::new(Line(19), Column(0)));
     }
 
     #[test]
     fn grow_lines_updates_inactive_cursor_pos() {
-        let mut size = SizeInfo {
-            width: 100.0,
-            height: 10.0,
-            cell_width: 1.0,
-            cell_height: 1.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let mut size = SizeInfo::new(100.0, 10.0, 1.0, 1.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
 
         // Create 10 lines of scrollback.
         for _ in 0..19 {
             term.newline();
         }
-        assert_eq!(term.grid.history_size(), 10);
+        assert_eq!(term.history_size(), 10);
         assert_eq!(term.grid.cursor.point, Point::new(Line(9), Column(0)));
 
         // Enter alt screen.
         term.set_mode(ansi::Mode::SwapScreenAndSetRestoreCursor);
 
         // Increase visible lines.
-        size.height = 30.;
-        term.resize(&size);
+        size.screen_lines.0 = 30;
+        term.resize(size);
 
         // Leave alt screen.
         term.unset_mode(ansi::Mode::SwapScreenAndSetRestoreCursor);
 
-        assert_eq!(term.grid().history_size(), 0);
+        assert_eq!(term.history_size(), 0);
         assert_eq!(term.grid.cursor.point, Point::new(Line(19), Column(0)));
     }
 
     #[test]
     fn shrink_lines_updates_active_cursor_pos() {
-        let mut size = SizeInfo {
-            width: 100.0,
-            height: 10.0,
-            cell_width: 1.0,
-            cell_height: 1.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let mut size = SizeInfo::new(100.0, 10.0, 1.0, 1.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
 
         // Create 10 lines of scrollback.
         for _ in 0..19 {
             term.newline();
         }
-        assert_eq!(term.grid.history_size(), 10);
+        assert_eq!(term.history_size(), 10);
         assert_eq!(term.grid.cursor.point, Point::new(Line(9), Column(0)));
 
         // Increase visible lines.
-        size.height = 5.;
-        term.resize(&size);
+        size.screen_lines.0 = 5;
+        term.resize(size);
 
-        assert_eq!(term.grid().history_size(), 15);
+        assert_eq!(term.history_size(), 15);
         assert_eq!(term.grid.cursor.point, Point::new(Line(4), Column(0)));
     }
 
     #[test]
     fn shrink_lines_updates_inactive_cursor_pos() {
-        let mut size = SizeInfo {
-            width: 100.0,
-            height: 10.0,
-            cell_width: 1.0,
-            cell_height: 1.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let mut size = SizeInfo::new(100.0, 10.0, 1.0, 1.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
 
         // Create 10 lines of scrollback.
         for _ in 0..19 {
             term.newline();
         }
-        assert_eq!(term.grid.history_size(), 10);
+        assert_eq!(term.history_size(), 10);
         assert_eq!(term.grid.cursor.point, Point::new(Line(9), Column(0)));
 
         // Enter alt screen.
         term.set_mode(ansi::Mode::SwapScreenAndSetRestoreCursor);
 
         // Increase visible lines.
-        size.height = 5.;
-        term.resize(&size);
+        size.screen_lines.0 = 5;
+        term.resize(size);
 
         // Leave alt screen.
         term.unset_mode(ansi::Mode::SwapScreenAndSetRestoreCursor);
 
-        assert_eq!(term.grid().history_size(), 15);
+        assert_eq!(term.history_size(), 15);
         assert_eq!(term.grid.cursor.point, Point::new(Line(4), Column(0)));
     }
 
     #[test]
     fn window_title() {
-        let size = SizeInfo {
-            width: 21.0,
-            height: 51.0,
-            cell_width: 3.0,
-            cell_height: 3.0,
-            padding_x: 0.0,
-            padding_y: 0.0,
-            dpr: 1.0,
-        };
-        let mut term = Term::new(&MockConfig::default(), &size, Mock);
+        let size = SizeInfo::new(21.0, 51.0, 3.0, 3.0, 0.0, 0.0, false);
+        let mut term = Term::new(&MockConfig::default(), size, Mock);
 
         // Title None by default.
         assert_eq!(term.title, None);
@@ -2687,6 +2759,15 @@ mod tests {
         term.title = Some("Test".into());
         term.set_title(None);
         assert_eq!(term.title, None);
+    }
+
+    #[test]
+    fn parse_cargo_version() {
+        assert!(version_number(env!("CARGO_PKG_VERSION")) >= 10_01);
+        assert_eq!(version_number("0.0.1-dev"), 1);
+        assert_eq!(version_number("0.1.2-dev"), 1_02);
+        assert_eq!(version_number("1.2.3-dev"), 1_02_03);
+        assert_eq!(version_number("999.99.99"), 9_99_99_99);
     }
 }
 
@@ -2738,7 +2819,7 @@ mod benches {
 
         let config = MockConfig::default();
 
-        let mut terminal = Term::new(&config, &size, Mock);
+        let mut terminal = Term::new(&config, size, Mock);
         mem::swap(&mut terminal.grid, &mut grid);
 
         b.iter(|| {

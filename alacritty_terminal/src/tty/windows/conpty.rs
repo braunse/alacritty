@@ -5,7 +5,6 @@ use std::os::windows::io::IntoRawHandle;
 use std::ptr;
 
 use mio_anonymous_pipes::{EventedAnonRead, EventedAnonWrite};
-use miow;
 use winapi::shared::basetsd::{PSIZE_T, SIZE_T};
 use winapi::shared::minwindef::{BYTE, DWORD};
 use winapi::shared::ntdef::{HANDLE, HRESULT, LPWSTR};
@@ -234,12 +233,12 @@ impl OnResize for Conpty {
 }
 
 /// Helper to build a COORD from a SizeInfo, returning None in overflow cases.
-fn coord_from_sizeinfo(sizeinfo: &SizeInfo) -> Option<COORD> {
-    let cols = sizeinfo.cols().0;
-    let lines = sizeinfo.lines().0;
+fn coord_from_sizeinfo(size: &SizeInfo) -> Option<COORD> {
+    let cols = size.cols().0;
+    let lines = size.screen_lines().0;
 
     if cols <= i16::MAX as usize && lines <= i16::MAX as usize {
-        Some(COORD { X: sizeinfo.cols().0 as i16, Y: sizeinfo.lines().0 as i16 })
+        Some(COORD { X: cols as i16, Y: lines as i16 })
     } else {
         None
     }
