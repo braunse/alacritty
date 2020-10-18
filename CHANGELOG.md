@@ -25,6 +25,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Escape sequences to report text area size in pixels (`CSI 14 t`) and in characters (`CSI 18 t`)
 - Support for single line terminals dimensions
 - Right clicking on Wayland's client side decorations will show application menu
+- Escape sequences to enable and disable window urgency hints (`CSI ? 1042 h`, `CSI ? 1042 l`)
 
 ### Changed
 
@@ -64,6 +65,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - Touchpad scrolling scrolled less than it should on macOS/Wayland on scaled outputs
 - Incorrect modifiers at startup on X11
 - `Add` and `Subtract` keys are now named `NumpadAdd` and `NumpadSubtract` respectively
+- Feature checking when cross compiling between different operating systems
+- Crash when writing to the clipboard fails on Wayland
 
 ## 0.5.0
 
