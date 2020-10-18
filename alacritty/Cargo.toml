@@ -12,7 +12,8 @@ edition = "2018"
 extended-description-file = "debian/description.txt"
 assets = [
     ["target/release/alacritty", "usr/bin/", "755"],
-    ["../README.md", "usr/share/doc/alacritty/README", "644"]
+    ["../README.md", "usr/share/doc/alacritty/README", "644"],
+    ["../extra/linux/Alacritty.desktop", "usr/share/applications/alacritty.desktop", "644"]
 ]
 
 [dependencies.alacritty_terminal]
